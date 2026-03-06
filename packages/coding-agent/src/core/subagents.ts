@@ -198,6 +198,10 @@ export class SubagentManager {
 		return record ? this.snapshot(record) : undefined;
 	}
 
+	getSession(idOrPrefix: string): AgentSession | undefined {
+		return this.resolve(idOrPrefix)?.session;
+	}
+
 	resolve(idOrPrefix: string): SubagentRecord | undefined {
 		const input = idOrPrefix.trim();
 		if (!input) return undefined;

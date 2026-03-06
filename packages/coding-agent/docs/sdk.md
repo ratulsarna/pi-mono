@@ -662,6 +662,16 @@ sm.createBranchedSession(leafId);       // Extract path to new file
 
 > See [examples/sdk/11-sessions.ts](../examples/sdk/11-sessions.ts) and [docs/session.md](session.md)
 
+### Subagent Sessions
+
+If you build custom subagent UX on top of the SDK, `SubagentManager.getSession(idOrPrefix)` returns the live child `AgentSession` when it is still retained in memory.
+
+Resolution rules:
+- Exact id match wins.
+- A unique id prefix is accepted.
+- Ambiguous or unknown prefixes return `undefined`.
+- Completed or cancelled subagents still return while their live session remains in memory.
+
 ### Settings Management
 
 ```typescript
@@ -941,6 +951,7 @@ createEventBus
 // Session management
 SessionManager
 SettingsManager
+SubagentManager
 
 // Built-in tools (use process.cwd())
 codingTools

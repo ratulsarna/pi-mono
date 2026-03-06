@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `SubagentManager.getSession(idOrPrefix)` to expose a live subagent `AgentSession` for exact or uniquely-prefixed ids.
+
+### Changed
+
+- Interactive mode now keeps unsent drafts in memory per session identity, so `/resume`, `/fork`, and tree navigation restore the correct draft for the active session view.
+
 ## [0.56.2] - 2026-03-05
 
 ### New Features

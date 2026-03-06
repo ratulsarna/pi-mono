@@ -108,6 +108,73 @@ describe("InteractiveMode.createExtensionUIContext setTheme", () => {
 	});
 });
 
+describe("InteractiveMode.createExtensionUIContext editor targeting", () => {
+	test("routes editor helpers through the active session view", () => {
+		const activeEditor = {
+			handleInput: vi.fn(),
+			setText: vi.fn(),
+			getText: vi.fn(() => "active draft"),
+		};
+		const inactiveEditor = {
+			handleInput: vi.fn(),
+			setText: vi.fn(),
+			getText: vi.fn(() => "inactive draft"),
+		};
+		const fakeThis: any = Object.create((InteractiveMode as any).prototype);
+		Object.assign(fakeThis, {
+			activeView: { editor: activeEditor },
+			session: { settingsManager: { getTheme: vi.fn(() => "dark"), setTheme: vi.fn() } },
+			ui: { requestRender: vi.fn(), terminal: { setTitle: vi.fn() } },
+			keybindings: {},
+			toolOutputExpanded: false,
+			setToolsExpanded: vi.fn(),
+		});
+
+		const uiContext = (InteractiveMode as any).prototype.createExtensionUIContext.call(fakeThis);
+		uiContext.pasteToEditor("hello");
+		uiContext.setEditorText("next");
+
+		expect(activeEditor.handleInput).toHaveBeenCalledWith("\u001b[200~hello\u001b[201~");
+		expect(activeEditor.setText).toHaveBeenCalledWith("next");
+		expect(uiContext.getEditorText()).toBe("active draft");
+		expect(inactiveEditor.handleInput).not.toHaveBeenCalled();
+		expect(inactiveEditor.setText).not.toHaveBeenCalled();
+	});
+});
+
+describe("InteractiveMode extension dialog teardown", () => {
+	test("resolves a pending selector when the active view tears it down", async () => {
+		let teardown: (() => void) | undefined;
+		const editor = { render: () => [""], invalidate: () => {} };
+		const activeView = {
+			editor,
+			editorContainer: new Container(),
+			extensionSelector: undefined,
+			registerDialogTeardown: (callback: () => void) => {
+				teardown = callback;
+				return () => {
+					if (teardown === callback) {
+						teardown = undefined;
+					}
+				};
+			},
+		};
+		const fakeThis: any = Object.create((InteractiveMode as any).prototype);
+		Object.assign(fakeThis, {
+			activeView,
+			ui: { setFocus: vi.fn(), requestRender: vi.fn() },
+		});
+
+		const promise = (InteractiveMode as any).prototype.showExtensionSelector.call(fakeThis, "Title", ["One"]);
+
+		expect(typeof teardown).toBe("function");
+		teardown?.();
+
+		await expect(promise).resolves.toBeUndefined();
+		expect(fakeThis.ui.setFocus).toHaveBeenCalledWith(editor);
+	});
+});
+
 describe("InteractiveMode.showLoadedResources", () => {
 	beforeAll(() => {
 		initTheme("dark");

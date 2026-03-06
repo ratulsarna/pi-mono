@@ -71,7 +71,6 @@ import { BashExecutionComponent } from "./components/bash-execution.js";
 import { BorderedLoader } from "./components/bordered-loader.js";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.js";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.js";
-import { CustomEditor } from "./components/custom-editor.js";
 import { CustomMessageComponent } from "./components/custom-message.js";
 import { DaxnutsComponent } from "./components/daxnuts.js";
 import { DynamicBorder } from "./components/dynamic-border.js";
@@ -92,6 +91,7 @@ import { ToolExecutionComponent } from "./components/tool-execution.js";
 import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.js";
+import { type CompactionQueuedMessage, InteractiveSessionView } from "./session-view.js";
 import {
 	getAvailableThemes,
 	getAvailableThemesWithPaths,
@@ -117,11 +117,6 @@ function isExpandable(obj: unknown): obj is Expandable {
 	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
 }
 
-type CompactionQueuedMessage = {
-	text: string;
-	mode: "steer" | "followUp";
-};
-
 /**
  * Options for InteractiveMode initialization.
  */
@@ -143,44 +138,20 @@ export interface InteractiveModeOptions {
 export class InteractiveMode {
 	private session: AgentSession;
 	private ui: TUI;
-	private chatContainer: Container;
-	private pendingMessagesContainer: Container;
-	private statusContainer: Container;
-	private defaultEditor: CustomEditor;
-	private editor: EditorComponent;
-	private autocompleteProvider: CombinedAutocompleteProvider | undefined;
 	private fdPath: string | undefined;
-	private editorContainer: Container;
+	private mainView: InteractiveSessionView;
+	private activeView: InteractiveSessionView;
+	private readonly sessionDrafts = new Map<string, string>();
 	private footer: FooterComponent;
 	private footerDataProvider: FooterDataProvider;
 	private keybindings: KeybindingsManager;
 	private version: string;
 	private isInitialized = false;
 	private onInputCallback?: (text: string) => void;
-	private loadingAnimation: Loader | undefined = undefined;
-	private pendingWorkingMessage: string | undefined = undefined;
-	private readonly defaultWorkingMessage = "Working...";
 
 	private lastSigintTime = 0;
 	private lastEscapeTime = 0;
 	private changelogMarkdown: string | undefined = undefined;
-
-	// Status line tracking (for mutating immediately-sequential status updates)
-	private lastStatusSpacer: Spacer | undefined = undefined;
-	private lastStatusText: Text | undefined = undefined;
-
-	// Streaming message tracking
-	private streamingComponent: AssistantMessageComponent | undefined = undefined;
-	private streamingMessage: AssistantMessage | undefined = undefined;
-
-	// Tool execution tracking: toolCallId -> component
-	private pendingTools = new Map<string, ToolExecutionComponent>();
-
-	// Tool output expansion state
-	private toolOutputExpanded = false;
-
-	// Thinking block visibility state
-	private hideThinkingBlock = false;
 
 	// Skill commands: command name -> skill file path
 	private skillCommands = new Map<string, string>();
@@ -190,33 +161,10 @@ export class InteractiveMode {
 	private subagentUnsubscribe?: () => void;
 	private subagentNoticeStatus = new Map<string, string>();
 
-	// Track if editor is in bash mode (text starts with !)
-	private isBashMode = false;
-
-	// Track current bash execution component
-	private bashComponent: BashExecutionComponent | undefined = undefined;
-
-	// Track pending bash components (shown in pending area, moved to chat on submit)
-	private pendingBashComponents: BashExecutionComponent[] = [];
-
-	// Auto-compaction state
-	private autoCompactionLoader: Loader | undefined = undefined;
-	private autoCompactionEscapeHandler?: () => void;
-
-	// Auto-retry state
-	private retryLoader: Loader | undefined = undefined;
-	private retryEscapeHandler?: () => void;
-
-	// Messages queued while compaction is running
-	private compactionQueuedMessages: CompactionQueuedMessage[] = [];
-
 	// Shutdown state
 	private shutdownRequested = false;
 
 	// Extension UI state
-	private extensionSelector: ExtensionSelectorComponent | undefined = undefined;
-	private extensionInput: ExtensionInputComponent | undefined = undefined;
-	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
 	private extensionTerminalInputUnsubscribers = new Set<() => void>();
 
 	// Extension widgets (components rendered above/below the editor)
@@ -247,6 +195,153 @@ export class InteractiveMode {
 	private get settingsManager() {
 		return this.session.settingsManager;
 	}
+	private get chatContainer() {
+		return this.activeView.chatContainer;
+	}
+	private get pendingMessagesContainer() {
+		return this.activeView.pendingMessagesContainer;
+	}
+	private get statusContainer() {
+		return this.activeView.statusContainer;
+	}
+	private get defaultEditor() {
+		return this.activeView.defaultEditor;
+	}
+	private get editor() {
+		return this.activeView.editor;
+	}
+	private set editor(editor: EditorComponent) {
+		this.activeView.editor = editor;
+	}
+	private get autocompleteProvider() {
+		return this.activeView.getAutocompleteProvider();
+	}
+	private set autocompleteProvider(provider: CombinedAutocompleteProvider | undefined) {
+		this.activeView.setAutocompleteProvider(provider);
+	}
+	private get editorContainer() {
+		return this.activeView.editorContainer;
+	}
+	private get loadingAnimation() {
+		return this.activeView.loadingAnimation;
+	}
+	private set loadingAnimation(loader: Loader | undefined) {
+		this.activeView.loadingAnimation = loader;
+	}
+	private get pendingWorkingMessage() {
+		return this.activeView.pendingWorkingMessage;
+	}
+	private set pendingWorkingMessage(message: string | undefined) {
+		this.activeView.pendingWorkingMessage = message;
+	}
+	private get defaultWorkingMessage() {
+		return this.activeView.defaultWorkingMessage;
+	}
+	private get lastStatusSpacer() {
+		return this.activeView.lastStatusSpacer;
+	}
+	private set lastStatusSpacer(spacer: Spacer | undefined) {
+		this.activeView.lastStatusSpacer = spacer;
+	}
+	private get lastStatusText() {
+		return this.activeView.lastStatusText;
+	}
+	private set lastStatusText(text: Text | undefined) {
+		this.activeView.lastStatusText = text;
+	}
+	private get streamingComponent() {
+		return this.activeView.streamingComponent;
+	}
+	private set streamingComponent(component: AssistantMessageComponent | undefined) {
+		this.activeView.streamingComponent = component;
+	}
+	private get streamingMessage() {
+		return this.activeView.streamingMessage;
+	}
+	private set streamingMessage(message: AssistantMessage | undefined) {
+		this.activeView.streamingMessage = message;
+	}
+	private get pendingTools() {
+		return this.activeView.pendingTools;
+	}
+	private get toolOutputExpanded() {
+		return this.activeView.toolOutputExpanded;
+	}
+	private set toolOutputExpanded(expanded: boolean) {
+		this.activeView.toolOutputExpanded = expanded;
+	}
+	private get hideThinkingBlock() {
+		return this.activeView.hideThinkingBlock;
+	}
+	private set hideThinkingBlock(hidden: boolean) {
+		this.activeView.hideThinkingBlock = hidden;
+	}
+	private get isBashMode() {
+		return this.activeView.isBashMode;
+	}
+	private set isBashMode(enabled: boolean) {
+		this.activeView.isBashMode = enabled;
+	}
+	private get bashComponent() {
+		return this.activeView.bashComponent;
+	}
+	private set bashComponent(component: BashExecutionComponent | undefined) {
+		this.activeView.bashComponent = component;
+	}
+	private get pendingBashComponents() {
+		return this.activeView.pendingBashComponents;
+	}
+	private set pendingBashComponents(components: BashExecutionComponent[]) {
+		this.activeView.pendingBashComponents = components;
+	}
+	private get autoCompactionLoader() {
+		return this.activeView.autoCompactionLoader;
+	}
+	private set autoCompactionLoader(loader: Loader | undefined) {
+		this.activeView.autoCompactionLoader = loader;
+	}
+	private get autoCompactionEscapeHandler() {
+		return this.activeView.autoCompactionEscapeHandler;
+	}
+	private set autoCompactionEscapeHandler(handler: (() => void) | undefined) {
+		this.activeView.autoCompactionEscapeHandler = handler;
+	}
+	private get retryLoader() {
+		return this.activeView.retryLoader;
+	}
+	private set retryLoader(loader: Loader | undefined) {
+		this.activeView.retryLoader = loader;
+	}
+	private get retryEscapeHandler() {
+		return this.activeView.retryEscapeHandler;
+	}
+	private set retryEscapeHandler(handler: (() => void) | undefined) {
+		this.activeView.retryEscapeHandler = handler;
+	}
+	private get compactionQueuedMessages() {
+		return this.activeView.compactionQueuedMessages;
+	}
+	private set compactionQueuedMessages(messages: CompactionQueuedMessage[]) {
+		this.activeView.compactionQueuedMessages = messages;
+	}
+	private get extensionSelector() {
+		return this.activeView.extensionSelector;
+	}
+	private set extensionSelector(component: ExtensionSelectorComponent | undefined) {
+		this.activeView.extensionSelector = component;
+	}
+	private get extensionInput() {
+		return this.activeView.extensionInput;
+	}
+	private set extensionInput(component: ExtensionInputComponent | undefined) {
+		this.activeView.extensionInput = component;
+	}
+	private get extensionEditor() {
+		return this.activeView.extensionEditor;
+	}
+	private set extensionEditor(component: ExtensionEditorComponent | undefined) {
+		this.activeView.extensionEditor = component;
+	}
 
 	constructor(
 		session: AgentSession,
@@ -257,27 +352,24 @@ export class InteractiveMode {
 		this.ui = new TUI(new ProcessTerminal(), this.settingsManager.getShowHardwareCursor());
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
 		this.headerContainer = new Container();
-		this.chatContainer = new Container();
-		this.pendingMessagesContainer = new Container();
-		this.statusContainer = new Container();
 		this.widgetContainerAbove = new Container();
 		this.widgetContainerBelow = new Container();
 		this.keybindings = KeybindingsManager.create();
 		const editorPaddingX = this.settingsManager.getEditorPaddingX();
 		const autocompleteMaxVisible = this.settingsManager.getAutocompleteMaxVisible();
-		this.defaultEditor = new CustomEditor(this.ui, getEditorTheme(), this.keybindings, {
-			paddingX: editorPaddingX,
+		this.mainView = new InteractiveSessionView({
+			session,
+			ui: this.ui,
+			keybindings: this.keybindings,
+			editorPaddingX,
 			autocompleteMaxVisible,
+			hideThinkingBlock: this.settingsManager.getHideThinkingBlock(),
+			draftStore: this.sessionDrafts,
 		});
-		this.editor = this.defaultEditor;
-		this.editorContainer = new Container();
-		this.editorContainer.addChild(this.editor as Component);
+		this.activeView = this.mainView;
 		this.footerDataProvider = new FooterDataProvider();
 		this.footer = new FooterComponent(session, this.footerDataProvider);
 		this.footer.setAutoCompactEnabled(session.autoCompactionEnabled);
-
-		// Load hide thinking block setting
-		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
 
 		// Register themes from resource loader and initialize
 		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
@@ -623,6 +715,24 @@ export class InteractiveMode {
 			...getMarkdownTheme(),
 			codeBlockIndent: this.settingsManager.getCodeBlockIndent(),
 		};
+	}
+
+	private saveActiveViewDraft(): void {
+		this.activeView.saveDraft();
+	}
+
+	private restoreActiveViewDraft(fallbackText?: string): void {
+		const restored = this.activeView.restoreDraft();
+		if (!restored && fallbackText) {
+			this.editor.setText(fallbackText);
+		}
+	}
+
+	private rerenderActiveViewForSessionChange(options?: { fallbackText?: string }): void {
+		this.activeView.resetTransientState();
+		this.renderInitialMessages();
+		this.restoreActiveViewDraft(options?.fallbackText);
+		this.ui.requestRender();
 	}
 
 	// =========================================================================
@@ -1006,11 +1116,7 @@ export class InteractiveMode {
 			commandContextActions: {
 				waitForIdle: () => this.session.agent.waitForIdle(),
 				newSession: async (options) => {
-					if (this.loadingAnimation) {
-						this.loadingAnimation.stop();
-						this.loadingAnimation = undefined;
-					}
-					this.statusContainer.clear();
+					this.saveActiveViewDraft();
 
 					// Delegate to AgentSession (handles setup + agent state sync)
 					const success = await this.session.newSession(options);
@@ -1018,34 +1124,25 @@ export class InteractiveMode {
 						return { cancelled: true };
 					}
 
-					// Clear UI state
-					this.chatContainer.clear();
-					this.pendingMessagesContainer.clear();
-					this.compactionQueuedMessages = [];
-					this.streamingComponent = undefined;
-					this.streamingMessage = undefined;
-					this.pendingTools.clear();
-
 					// Render any messages added via setup, or show empty session
-					this.renderInitialMessages();
-					this.ui.requestRender();
+					this.rerenderActiveViewForSessionChange();
 
 					return { cancelled: false };
 				},
 				fork: async (entryId) => {
+					this.saveActiveViewDraft();
 					const result = await this.session.fork(entryId);
 					if (result.cancelled) {
 						return { cancelled: true };
 					}
 
-					this.chatContainer.clear();
-					this.renderInitialMessages();
-					this.editor.setText(result.selectedText);
+					this.rerenderActiveViewForSessionChange({ fallbackText: result.selectedText });
 					this.showStatus("Forked to new session");
 
 					return { cancelled: false };
 				},
 				navigateTree: async (targetId, options) => {
+					this.saveActiveViewDraft();
 					const result = await this.session.navigateTree(targetId, {
 						summarize: options?.summarize,
 						customInstructions: options?.customInstructions,
@@ -1056,11 +1153,7 @@ export class InteractiveMode {
 						return { cancelled: true };
 					}
 
-					this.chatContainer.clear();
-					this.renderInitialMessages();
-					if (result.editorText && !this.editor.getText().trim()) {
-						this.editor.setText(result.editorText);
-					}
+					this.rerenderActiveViewForSessionChange({ fallbackText: result.editorText });
 					this.showStatus("Navigated to selected point");
 
 					return { cancelled: false };
@@ -1451,9 +1544,19 @@ export class InteractiveMode {
 				return;
 			}
 
+			let settled = false;
+			let unregisterTeardown: (() => void) | undefined;
+			const finish = (value: string | undefined) => {
+				if (settled) return;
+				settled = true;
+				unregisterTeardown?.();
+				opts?.signal?.removeEventListener("abort", onAbort);
+				resolve(value);
+			};
+
 			const onAbort = () => {
 				this.hideExtensionSelector();
-				resolve(undefined);
+				finish(undefined);
 			};
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -1461,17 +1564,19 @@ export class InteractiveMode {
 				title,
 				options,
 				(option) => {
-					opts?.signal?.removeEventListener("abort", onAbort);
 					this.hideExtensionSelector();
-					resolve(option);
+					finish(option);
 				},
 				() => {
-					opts?.signal?.removeEventListener("abort", onAbort);
 					this.hideExtensionSelector();
-					resolve(undefined);
+					finish(undefined);
 				},
 				{ tui: this.ui, timeout: opts?.timeout },
 			);
+			unregisterTeardown = this.activeView.registerDialogTeardown(() => {
+				this.hideExtensionSelector();
+				finish(undefined);
+			});
 
 			this.editorContainer.clear();
 			this.editorContainer.addChild(this.extensionSelector);
@@ -1518,9 +1623,19 @@ export class InteractiveMode {
 				return;
 			}
 
+			let settled = false;
+			let unregisterTeardown: (() => void) | undefined;
+			const finish = (value: string | undefined) => {
+				if (settled) return;
+				settled = true;
+				unregisterTeardown?.();
+				opts?.signal?.removeEventListener("abort", onAbort);
+				resolve(value);
+			};
+
 			const onAbort = () => {
 				this.hideExtensionInput();
-				resolve(undefined);
+				finish(undefined);
 			};
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -1528,17 +1643,19 @@ export class InteractiveMode {
 				title,
 				placeholder,
 				(value) => {
-					opts?.signal?.removeEventListener("abort", onAbort);
 					this.hideExtensionInput();
-					resolve(value);
+					finish(value);
 				},
 				() => {
-					opts?.signal?.removeEventListener("abort", onAbort);
 					this.hideExtensionInput();
-					resolve(undefined);
+					finish(undefined);
 				},
 				{ tui: this.ui, timeout: opts?.timeout },
 			);
+			unregisterTeardown = this.activeView.registerDialogTeardown(() => {
+				this.hideExtensionInput();
+				finish(undefined);
+			});
 
 			this.editorContainer.clear();
 			this.editorContainer.addChild(this.extensionInput);
@@ -1564,6 +1681,15 @@ export class InteractiveMode {
 	 */
 	private showExtensionEditor(title: string, prefill?: string): Promise<string | undefined> {
 		return new Promise((resolve) => {
+			let settled = false;
+			let unregisterTeardown: (() => void) | undefined;
+			const finish = (value: string | undefined) => {
+				if (settled) return;
+				settled = true;
+				unregisterTeardown?.();
+				resolve(value);
+			};
+
 			this.extensionEditor = new ExtensionEditorComponent(
 				this.ui,
 				this.keybindings,
@@ -1571,13 +1697,17 @@ export class InteractiveMode {
 				prefill,
 				(value) => {
 					this.hideExtensionEditor();
-					resolve(value);
+					finish(value);
 				},
 				() => {
 					this.hideExtensionEditor();
-					resolve(undefined);
+					finish(undefined);
 				},
 			);
+			unregisterTeardown = this.activeView.registerDialogTeardown(() => {
+				this.hideExtensionEditor();
+				finish(undefined);
+			});
 
 			this.editorContainer.clear();
 			this.editorContainer.addChild(this.extensionEditor);
@@ -3425,6 +3555,7 @@ export class InteractiveMode {
 			const selector = new UserMessageSelectorComponent(
 				userMessages.map((m) => ({ id: m.entryId, text: m.text })),
 				async (entryId) => {
+					this.saveActiveViewDraft();
 					const result = await this.session.fork(entryId);
 					if (result.cancelled) {
 						// Extension cancelled the fork
@@ -3433,9 +3564,7 @@ export class InteractiveMode {
 						return;
 					}
 
-					this.chatContainer.clear();
-					this.renderInitialMessages();
-					this.editor.setText(result.selectedText);
+					this.rerenderActiveViewForSessionChange({ fallbackText: result.selectedText });
 					done();
 					this.showStatus("Branched to new session");
 				},
@@ -3528,6 +3657,7 @@ export class InteractiveMode {
 					}
 
 					try {
+						this.saveActiveViewDraft();
 						const result = await this.session.navigateTree(entryId, {
 							summarize: wantsSummary,
 							customInstructions,
@@ -3545,11 +3675,7 @@ export class InteractiveMode {
 						}
 
 						// Update UI
-						this.chatContainer.clear();
-						this.renderInitialMessages();
-						if (result.editorText && !this.editor.getText().trim()) {
-							this.editor.setText(result.editorText);
-						}
+						this.rerenderActiveViewForSessionChange({ fallbackText: result.editorText });
 						this.showStatus("Navigated to selected point");
 					} catch (error) {
 						this.showError(error instanceof Error ? error.message : String(error));
@@ -3612,26 +3738,15 @@ export class InteractiveMode {
 	}
 
 	private async handleResumeSession(sessionPath: string): Promise<void> {
-		// Stop loading animation
-		if (this.loadingAnimation) {
-			this.loadingAnimation.stop();
-			this.loadingAnimation = undefined;
-		}
-		this.statusContainer.clear();
-
-		// Clear UI state
-		this.pendingMessagesContainer.clear();
-		this.compactionQueuedMessages = [];
-		this.streamingComponent = undefined;
-		this.streamingMessage = undefined;
-		this.pendingTools.clear();
+		this.saveActiveViewDraft();
 
 		// Switch session via AgentSession (emits extension session events)
-		await this.session.switchSession(sessionPath);
+		const success = await this.session.switchSession(sessionPath);
+		if (!success) {
+			return;
+		}
 
-		// Clear and re-render the chat
-		this.chatContainer.clear();
-		this.renderInitialMessages();
+		this.rerenderActiveViewForSessionChange();
 		this.showStatus("Resumed session");
 	}
 
@@ -4254,24 +4369,15 @@ export class InteractiveMode {
 	}
 
 	private async handleClearCommand(): Promise<void> {
-		// Stop loading animation
-		if (this.loadingAnimation) {
-			this.loadingAnimation.stop();
-			this.loadingAnimation = undefined;
-		}
-		this.statusContainer.clear();
+		this.saveActiveViewDraft();
 
 		// New session via session (emits extension session events)
-		await this.session.newSession();
+		const success = await this.session.newSession();
+		if (!success) {
+			return;
+		}
 
-		// Clear UI state
-		this.chatContainer.clear();
-		this.pendingMessagesContainer.clear();
-		this.compactionQueuedMessages = [];
-		this.streamingComponent = undefined;
-		this.streamingMessage = undefined;
-		this.pendingTools.clear();
-
+		this.rerenderActiveViewForSessionChange();
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(`${theme.fg("accent", "✓ New session started")}`, 1, 1));
 		this.ui.requestRender();
