@@ -60,6 +60,8 @@ export interface CreateAgentSessionOptions {
 	tools?: Tool[];
 	/** Custom tools to register (in addition to built-in tools). */
 	customTools?: ToolDefinition[];
+	/** Enable the built-in subagent runtime + tool. Default: true. */
+	enableSubagents?: boolean;
 
 	/** Resource loader. When omitted, DefaultResourceLoader is used. */
 	resourceLoader?: ResourceLoader;
@@ -355,6 +357,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		modelRegistry,
 		initialActiveToolNames,
 		extensionRunnerRef,
+		enableSubagents: options.enableSubagents,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 

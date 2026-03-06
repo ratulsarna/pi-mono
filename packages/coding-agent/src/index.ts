@@ -213,6 +213,16 @@ export {
 	type Skill,
 	type SkillFrontmatter,
 } from "./core/skills.js";
+export {
+	type CreateSubagentSessionOptions,
+	type SendSubagentMessageOptions,
+	type SpawnSubagentOptions,
+	type SubagentActivity,
+	type SubagentEvent,
+	SubagentManager,
+	type SubagentSnapshot,
+	type SubagentStatus,
+} from "./core/subagents.js";
 // Tools
 export {
 	type BashOperations,

@@ -87,6 +87,7 @@ import { ScopedModelsSelectorComponent } from "./components/scoped-models-select
 import { SessionSelectorComponent } from "./components/session-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.js";
+import { SubagentMonitorComponent } from "./components/subagent-monitor.js";
 import { ToolExecutionComponent } from "./components/tool-execution.js";
 import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
@@ -186,6 +187,8 @@ export class InteractiveMode {
 
 	// Agent subscription unsubscribe function
 	private unsubscribe?: () => void;
+	private subagentUnsubscribe?: () => void;
+	private subagentNoticeStatus = new Map<string, string>();
 
 	// Track if editor is in bash mode (text starts with !)
 	private isBashMode = false;
@@ -1908,6 +1911,21 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
+			if (text === "/subagents") {
+				this.editor.setText("");
+				await this.showSubagentMonitor();
+				return;
+			}
+			if (text.startsWith("/subagent-send ")) {
+				this.editor.setText("");
+				await this.handleSubagentSendCommand(text);
+				return;
+			}
+			if (text.startsWith("/subagent-cancel ")) {
+				this.editor.setText("");
+				await this.handleSubagentCancelCommand(text);
+				return;
+			}
 			if (text === "/changelog") {
 				this.handleChangelogCommand();
 				this.editor.setText("");
@@ -2030,6 +2048,22 @@ export class InteractiveMode {
 	private subscribeToAgent(): void {
 		this.unsubscribe = this.session.subscribe(async (event) => {
 			await this.handleEvent(event);
+		});
+		this.subagentUnsubscribe = this.session.subagentManager?.subscribe((event) => {
+			if (event.type === "updated") {
+				const previousStatus = this.subagentNoticeStatus.get(event.subagent.id);
+				if (previousStatus !== event.subagent.status) {
+					this.subagentNoticeStatus.set(event.subagent.id, event.subagent.status);
+					if (event.subagent.status === "completed") {
+						this.showStatus(`Subagent ${event.subagent.name} finished`);
+					} else if (event.subagent.status === "failed") {
+						this.showWarning(`Subagent ${event.subagent.name} failed`);
+					} else if (event.subagent.status === "cancelled") {
+						this.showWarning(`Subagent ${event.subagent.name} cancelled`);
+					}
+				}
+			}
+			this.ui.requestRender();
 		});
 	}
 
@@ -3991,6 +4025,73 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
+	private async handleSubagentSendCommand(text: string): Promise<void> {
+		const trimmed = text.replace(/^\/subagent-send\s*/, "").trim();
+		const firstSpace = trimmed.indexOf(" ");
+		if (!trimmed || firstSpace === -1) {
+			this.showWarning("Usage: /subagent-send <id> <message>");
+			return;
+		}
+		const id = trimmed.slice(0, firstSpace).trim();
+		const message = trimmed.slice(firstSpace + 1).trim();
+		if (!id || !message) {
+			this.showWarning("Usage: /subagent-send <id> <message>");
+			return;
+		}
+		const manager = this.session.subagentManager;
+		if (!manager) {
+			this.showWarning("Subagents are not enabled in this session");
+			return;
+		}
+		try {
+			await manager.sendMessage(id, message, { deliverAs: "followUp" });
+			this.showStatus(`Sent message to subagent ${id}`);
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	private async handleSubagentCancelCommand(text: string): Promise<void> {
+		const id = text.replace(/^\/subagent-cancel\s*/, "").trim();
+		if (!id) {
+			this.showWarning("Usage: /subagent-cancel <id>");
+			return;
+		}
+		const manager = this.session.subagentManager;
+		if (!manager) {
+			this.showWarning("Subagents are not enabled in this session");
+			return;
+		}
+		try {
+			await manager.cancel(id);
+			this.showStatus(`Cancelled subagent ${id}`);
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	private async showSubagentMonitor(): Promise<void> {
+		const manager = this.session.subagentManager;
+		if (!manager) {
+			this.showWarning("Subagents are not enabled in this session");
+			return;
+		}
+
+		await this.showExtensionCustom<void>(
+			(_tui, overlayTheme, _kb, done) => {
+				return new SubagentMonitorComponent(overlayTheme, () => manager.list(), {
+					onCancel: (id) => {
+						void manager.cancel(id).catch((error) => {
+							this.showError(error instanceof Error ? error.message : String(error));
+						});
+					},
+					onClose: () => done(undefined),
+				});
+			},
+			{ overlay: true },
+		);
+	}
+
 	private handleChangelogCommand(): void {
 		const changelogPath = getChangelogPath();
 		const allEntries = parseChangelog(changelogPath);
@@ -4394,6 +4495,9 @@ export class InteractiveMode {
 		this.footerDataProvider.dispose();
 		if (this.unsubscribe) {
 			this.unsubscribe();
+		}
+		if (this.subagentUnsubscribe) {
+			this.subagentUnsubscribe();
 		}
 		if (this.isInitialized) {
 			this.ui.stop();

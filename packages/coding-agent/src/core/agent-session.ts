@@ -73,10 +73,13 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
+import { DefaultResourceLoader } from "./resource-loader.js";
 import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.js";
-import { getLatestCompactionEntry } from "./session-manager.js";
+import { getLatestCompactionEntry, SessionManager as SessionManagerClass } from "./session-manager.js";
 import type { SettingsManager } from "./settings-manager.js";
 import { BUILTIN_SLASH_COMMANDS, type SlashCommandInfo, type SlashCommandLocation } from "./slash-commands.js";
+import { createSubagentToolDefinition } from "./subagent-tool.js";
+import { SubagentManager } from "./subagents.js";
 import { buildSystemPrompt } from "./system-prompt.js";
 import type { BashOperations } from "./tools/bash.js";
 import { createAllTools } from "./tools/index.js";
@@ -148,6 +151,8 @@ export interface AgentSessionConfig {
 	baseToolsOverride?: Record<string, AgentTool>;
 	/** Mutable ref used by Agent to access the current ExtensionRunner */
 	extensionRunnerRef?: { current?: ExtensionRunner };
+	/** Enable the built-in subagent runtime + tool. Default: true */
+	enableSubagents?: boolean;
 }
 
 export interface ExtensionBindings {
@@ -271,6 +276,8 @@ export class AgentSession {
 	private _toolRegistry: Map<string, AgentTool> = new Map();
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
+	private _subagentManager?: SubagentManager;
+	private _enableSubagents: boolean;
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
@@ -287,6 +294,13 @@ export class AgentSession {
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._baseToolsOverride = config.baseToolsOverride;
+		this._enableSubagents = config.enableSubagents ?? true;
+		if (this._enableSubagents) {
+			this._subagentManager = new SubagentManager({
+				parentSession: this,
+				createSession: (options) => this._createSubagentSession(options),
+			});
+		}
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -598,6 +612,7 @@ export class AgentSession {
 	 */
 	dispose(): void {
 		this._disconnectFromAgent();
+		this._subagentManager?.dispose();
 		this._eventListeners = [];
 	}
 
@@ -1213,6 +1228,10 @@ export class AgentSession {
 
 	get resourceLoader(): ResourceLoader {
 		return this._resourceLoader;
+	}
+
+	get subagentManager(): SubagentManager | undefined {
+		return this._subagentManager;
 	}
 
 	/**
@@ -2075,12 +2094,81 @@ export class AgentSession {
 		);
 	}
 
+	private async _createSubagentSession(options: {
+		model?: string;
+		thinkingLevel?: ThinkingLevel;
+		toolNames?: string[];
+		name?: string;
+	}): Promise<AgentSession> {
+		const { createAgentSession } = await import("./sdk.js");
+		const resolvedModel = this._resolveSubagentModel(options.model);
+		const childResourceLoader = new DefaultResourceLoader({
+			cwd: this._cwd,
+			settingsManager: this.settingsManager,
+			noExtensions: true,
+			noThemes: true,
+		});
+		await childResourceLoader.reload();
+
+		const result = await createAgentSession({
+			cwd: this._cwd,
+			model: resolvedModel,
+			thinkingLevel: options.thinkingLevel ?? this.thinkingLevel,
+			resourceLoader: childResourceLoader,
+			sessionManager: SessionManagerClass.inMemory(this._cwd),
+			settingsManager: this.settingsManager,
+			modelRegistry: this.modelRegistry,
+			enableSubagents: false,
+		});
+
+		const childSession = result.session;
+		const toolNames = (options.toolNames ?? this.getActiveToolNames().filter((name) => name !== "subagent")).filter(
+			Boolean,
+		);
+		childSession.setActiveToolsByName(toolNames.length > 0 ? toolNames : ["read", "bash", "edit", "write"]);
+		if (options.name) {
+			childSession.sessionManager.appendSessionInfo(options.name);
+		}
+		return childSession;
+	}
+
+	private _resolveSubagentModel(modelRef: string | undefined): Model<any> | undefined {
+		if (!modelRef) {
+			return this.model;
+		}
+		const trimmed = modelRef.trim();
+		if (!trimmed) return this.model;
+		const slashIndex = trimmed.indexOf("/");
+		if (slashIndex === -1) {
+			throw new Error(`Invalid model "${trimmed}". Use provider/modelId.`);
+		}
+		const provider = trimmed.slice(0, slashIndex).trim();
+		const modelId = trimmed.slice(slashIndex + 1).trim();
+		if (!provider || !modelId) {
+			throw new Error(`Invalid model "${trimmed}". Use provider/modelId.`);
+		}
+		const model = this.modelRegistry.find(provider, modelId);
+		if (!model) {
+			throw new Error(`Unknown model: ${trimmed}`);
+		}
+		return model;
+	}
+
 	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {
 		const previousRegistryNames = new Set(this._toolRegistry.keys());
 		const previousActiveToolNames = this.getActiveToolNames();
 
 		const registeredTools = this._extensionRunner?.getAllRegisteredTools() ?? [];
+		const builtinCustomTools: Array<{ definition: ToolDefinition; extensionPath: string }> = this._subagentManager
+			? [
+					{
+						definition: createSubagentToolDefinition(this._subagentManager) as unknown as ToolDefinition,
+						extensionPath: "<builtin:subagent>",
+					},
+				]
+			: [];
 		const allCustomTools = [
+			...builtinCustomTools,
 			...registeredTools,
 			...this._customTools.map((def) => ({ definition: def, extensionPath: "<sdk>" })),
 		];
