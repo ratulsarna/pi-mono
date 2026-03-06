@@ -25,6 +25,7 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "name", description: "Set session display name" },
 	{ name: "session", description: "Show session info and stats" },
 	{ name: "subagents", description: "Browse sibling sessions" },
+	{ name: "back", description: "Return to the main session" },
 	{ name: "subagent-send", description: "Send a message to a subagent" },
 	{ name: "subagent-cancel", description: "Cancel a running subagent" },
 	{ name: "changelog", description: "Show changelog entries" },
