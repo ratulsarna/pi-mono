@@ -42,6 +42,10 @@ export class FooterComponent implements Component {
 		this.autoCompactEnabled = enabled;
 	}
 
+	setSession(session: AgentSession): void {
+		this.session = session;
+	}
+
 	/**
 	 * No-op: git branch caching now handled by provider.
 	 * Kept for compatibility with existing call sites in interactive-mode.
