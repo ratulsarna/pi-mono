@@ -9,6 +9,7 @@
 ### Changed
 
 - Interactive mode now keeps unsent drafts in memory per session identity, so `/resume`, `/fork`, and tree navigation restore the correct draft for the active session view.
+- `/subagents` now opens a searchable sibling-session picker with compact session context instead of the old monitor overlay.
 
 ## [0.56.2] - 2026-03-05
 
