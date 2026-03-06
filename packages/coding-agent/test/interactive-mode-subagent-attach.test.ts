@@ -197,6 +197,44 @@ describe("InteractiveMode active session routing", () => {
 		expect(fakeThis.attachedSubagentId).toBe("child-1");
 	});
 
+	test("bindActiveSessionSubscription ignores stale callbacks after switching sessions", async () => {
+		let staleCallback: ((event: { type: string }) => Promise<void>) | undefined;
+		let activeCallback: ((event: { type: string }) => Promise<void>) | undefined;
+		const unsubscribeStale = vi.fn();
+		const staleSession = {
+			subscribe: vi.fn((callback: (event: { type: string }) => Promise<void>) => {
+				staleCallback = callback;
+				return unsubscribeStale;
+			}),
+		};
+		const activeSession = {
+			subscribe: vi.fn((callback: (event: { type: string }) => Promise<void>) => {
+				activeCallback = callback;
+				return vi.fn();
+			}),
+		};
+		const prototype = InteractiveMode as unknown as {
+			prototype: Record<string, (...args: unknown[]) => unknown>;
+		};
+		const fakeThis = {
+			activeSession: staleSession,
+			activeSessionUnsubscribe: undefined as (() => void) | undefined,
+			activeSessionSubscriptionEpoch: 0,
+			handleEvent: vi.fn(),
+			isActiveSessionEvent: prototype.prototype.isActiveSessionEvent,
+		};
+
+		prototype.prototype.bindActiveSessionSubscription.call(fakeThis);
+		fakeThis.activeSession = activeSession;
+		prototype.prototype.bindActiveSessionSubscription.call(fakeThis);
+
+		await staleCallback?.({ type: "agent_start" });
+		await activeCallback?.({ type: "agent_start" });
+
+		expect(unsubscribeStale).toHaveBeenCalledTimes(1);
+		expect(fakeThis.handleEvent).toHaveBeenCalledTimes(1);
+	});
+
 	test("handleNameCommand updates the active session manager while attached", () => {
 		const activeSessionManager = {
 			getSessionName: vi.fn(() => "Child"),
@@ -235,6 +273,32 @@ describe("InteractiveMode active session routing", () => {
 		expect(activeSessionManager.getEntries).toHaveBeenCalledTimes(1);
 		expect(fakeThis.executeCompaction).toHaveBeenCalledWith("custom", false);
 		expect(fakeThis.showWarning).not.toHaveBeenCalled();
+	});
+
+	test("handleResumeSession switches the active session while attached", async () => {
+		const mainSession = {
+			switchSession: vi.fn(),
+		};
+		const activeSession = {
+			switchSession: vi.fn(async () => true),
+		};
+		const fakeThis = {
+			session: mainSession,
+			activeSession,
+			saveActiveViewDraft: vi.fn(),
+			rerenderActiveViewForSessionChange: vi.fn(),
+			showStatus: vi.fn(),
+		};
+		const prototype = InteractiveMode as unknown as {
+			prototype: Record<string, (...args: unknown[]) => Promise<void>>;
+		};
+
+		await prototype.prototype.handleResumeSession.call(fakeThis, "/tmp/attached-session.json");
+
+		expect(activeSession.switchSession).toHaveBeenCalledWith("/tmp/attached-session.json");
+		expect(mainSession.switchSession).not.toHaveBeenCalled();
+		expect(fakeThis.rerenderActiveViewForSessionChange).toHaveBeenCalledTimes(1);
+		expect(fakeThis.showStatus).toHaveBeenCalledWith("Resumed session");
 	});
 });
 

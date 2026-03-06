@@ -161,6 +161,7 @@ export class InteractiveMode {
 
 	// Agent subscription unsubscribe function
 	private activeSessionUnsubscribe?: () => void;
+	private activeSessionSubscriptionEpoch = 0;
 	private subagentUnsubscribe?: () => void;
 	private subagentNoticeStatus = new Map<string, string>();
 
@@ -2331,14 +2332,29 @@ export class InteractiveMode {
 
 	private bindActiveSessionSubscription(): void {
 		this.activeSessionUnsubscribe?.();
-		this.activeSessionUnsubscribe = this.activeSession.subscribe(async (event) => {
-			await this.handleEvent(event);
+		const session = this.activeSession;
+		const epoch = ++this.activeSessionSubscriptionEpoch;
+		this.activeSessionUnsubscribe = session.subscribe(async (event) => {
+			if (!this.isActiveSessionEvent(epoch, session)) {
+				return;
+			}
+			await this.handleEvent(event, epoch, session);
 		});
 	}
 
-	private async handleEvent(event: AgentSessionEvent): Promise<void> {
+	private isActiveSessionEvent(epoch: number, session: AgentSession): boolean {
+		return this.activeSessionSubscriptionEpoch === epoch && this.activeSession === session;
+	}
+
+	private async handleEvent(event: AgentSessionEvent, epoch: number, session: AgentSession): Promise<void> {
+		if (!this.isActiveSessionEvent(epoch, session)) {
+			return;
+		}
 		if (!this.isInitialized) {
 			await this.init();
+			if (!this.isActiveSessionEvent(epoch, session)) {
+				return;
+			}
 		}
 
 		this.footer.invalidate();
@@ -2520,6 +2536,9 @@ export class InteractiveMode {
 				this.pendingTools.clear();
 
 				await this.checkShutdownRequested();
+				if (!this.isActiveSessionEvent(epoch, session)) {
+					return;
+				}
 
 				this.ui.requestRender();
 				break;
@@ -3848,10 +3867,10 @@ export class InteractiveMode {
 	}
 
 	private showSessionSelector(): void {
+		const sessionManager = this.activeSessionManager;
 		this.showSelector((done) => {
 			const selector = new SessionSelectorComponent(
-				(onProgress) =>
-					SessionManager.list(this.sessionManager.getCwd(), this.sessionManager.getSessionDir(), onProgress),
+				(onProgress) => SessionManager.list(sessionManager.getCwd(), sessionManager.getSessionDir(), onProgress),
 				SessionManager.listAll,
 				async (sessionPath) => {
 					done();
@@ -3876,7 +3895,7 @@ export class InteractiveMode {
 					keybindings: this.keybindings,
 				},
 
-				this.sessionManager.getSessionFile(),
+				sessionManager.getSessionFile(),
 			);
 			return { component: selector, focus: selector };
 		});
@@ -3886,7 +3905,7 @@ export class InteractiveMode {
 		this.saveActiveViewDraft();
 
 		// Switch session via AgentSession (emits extension session events)
-		const success = await this.session.switchSession(sessionPath);
+		const success = await this.activeSession.switchSession(sessionPath);
 		if (!success) {
 			return;
 		}
