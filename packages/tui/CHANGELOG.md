@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.56.3] - 2026-03-06
+
+### Added
+
+- Added xterm modifyOtherKeys mode 2 fallback when Kitty keyboard protocol is not available, enabling modified enter keys (Shift+Enter, Ctrl+Enter) inside tmux ([#1872](https://github.com/badlogic/pi-mono/issues/1872))
+
 ## [0.56.2] - 2026-03-05
 
 ### Added
