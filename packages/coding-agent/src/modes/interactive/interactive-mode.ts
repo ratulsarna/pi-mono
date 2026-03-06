@@ -86,7 +86,10 @@ import { ScopedModelsSelectorComponent } from "./components/scoped-models-select
 import { SessionSelectorComponent } from "./components/session-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.js";
-import { SubagentMonitorComponent } from "./components/subagent-monitor.js";
+import {
+	formatSubagentSelectionAcknowledgement,
+	SubagentSessionPickerComponent,
+} from "./components/subagent-session-picker.js";
 import { ToolExecutionComponent } from "./components/tool-execution.js";
 import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
@@ -2043,7 +2046,7 @@ export class InteractiveMode {
 			}
 			if (text === "/subagents") {
 				this.editor.setText("");
-				await this.showSubagentMonitor();
+				this.showSubagentPicker();
 				return;
 			}
 			if (text.startsWith("/subagent-send ")) {
@@ -4185,26 +4188,27 @@ export class InteractiveMode {
 		}
 	}
 
-	private async showSubagentMonitor(): Promise<void> {
+	private showSubagentPicker(): void {
 		const manager = this.session.subagentManager;
 		if (!manager) {
 			this.showWarning("Subagents are not enabled in this session");
 			return;
 		}
 
-		await this.showExtensionCustom<void>(
-			(_tui, overlayTheme, _kb, done) => {
-				return new SubagentMonitorComponent(overlayTheme, () => manager.list(), {
-					onCancel: (id) => {
-						void manager.cancel(id).catch((error) => {
-							this.showError(error instanceof Error ? error.message : String(error));
-						});
-					},
-					onClose: () => done(undefined),
-				});
-			},
-			{ overlay: true },
-		);
+		this.showSelector((done) => {
+			const picker = new SubagentSessionPickerComponent(
+				() => manager.list(),
+				(subagent) => {
+					done();
+					this.showStatus(formatSubagentSelectionAcknowledgement(subagent));
+				},
+				() => {
+					done();
+					this.ui.requestRender();
+				},
+			);
+			return { component: picker, focus: picker };
+		});
 	}
 
 	private handleChangelogCommand(): void {
