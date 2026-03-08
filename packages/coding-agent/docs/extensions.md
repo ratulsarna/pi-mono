@@ -225,8 +225,9 @@ Run `npm install` in the extension directory, then imports from `node_modules/` 
 ### Lifecycle Overview
 
 ```
-pi starts
+pi starts (CLI only)
   │
+  ├─► session_directory (CLI startup only, no ctx)
   └─► session_start
       │
       ▼
@@ -243,6 +244,7 @@ user sends prompt ────────────────────�
   │   │                                            │       │
   │   ├─► turn_start                               │       │
   │   ├─► context (can modify messages)            │       │
+  │   ├─► before_provider_request (can inspect or replace payload)
   │   │                                            │       │
   │   │   LLM responds, may call tools:            │       │
   │   │     ├─► tool_call (can block)              │       │
@@ -283,6 +285,26 @@ exit (Ctrl+C, Ctrl+D)
 ### Session Events
 
 See [session.md](session.md) for session storage internals and the SessionManager API.
+
+#### session_directory
+
+Fired by the `pi` CLI during startup session resolution, before the initial session manager is created.
+
+This event is:
+- CLI-only. It is not emitted in SDK mode.
+- Startup-only. It is not emitted for later interactive `/new` or `/resume` actions.
+- Bypassed when `--session-dir` is provided.
+- Special-cased to receive no `ctx` argument.
+
+If multiple extensions return `sessionDir`, the last one wins.
+
+```typescript
+pi.on("session_directory", async (event) => {
+  return {
+    sessionDir: `/tmp/pi-sessions/${encodeURIComponent(event.cwd)}`,
+  };
+});
+```
 
 #### session_start
 
@@ -489,6 +511,21 @@ pi.on("context", async (event, ctx) => {
 });
 ```
 
+#### before_provider_request
+
+Fired after the provider-specific payload is built, right before the request is sent. Handlers run in extension load order. Returning `undefined` keeps the payload unchanged. Returning any other value replaces the payload for later handlers and for the actual request.
+
+```typescript
+pi.on("before_provider_request", (event, ctx) => {
+  console.log(JSON.stringify(event.payload, null, 2));
+
+  // Optional: replace payload
+  // return { ...event.payload, temperature: 0 };
+});
+```
+
+This is mainly useful for debugging provider serialization and cache behavior.
+
 ### Model Events
 
 #### model_select
@@ -658,7 +695,9 @@ Transforms chain across handlers. See [input-transform.ts](../examples/extension
 
 ## ExtensionContext
 
-Every handler receives `ctx: ExtensionContext`:
+All handlers except `session_directory` receive `ctx: ExtensionContext`.
+
+`session_directory` is a CLI startup hook and receives only the event.
 
 ### ctx.ui
 
@@ -1934,6 +1973,7 @@ All examples in [examples/extensions/](../examples/extensions/).
 | `dirty-repo-guard.ts` | Warn on dirty git repo | `on("session_before_*")`, `exec` |
 | `input-transform.ts` | Transform user input | `on("input")` |
 | `model-status.ts` | React to model changes | `on("model_select")`, `setStatus` |
+| `provider-payload.ts` | Inspect or patch provider payloads | `on("before_provider_request")` |
 | `system-prompt-header.ts` | Display system prompt info | `on("agent_start")`, `getSystemPrompt` |
 | `claude-rules.ts` | Load rules from files | `on("session_start")`, `on("before_agent_start")` |
 | `file-trigger.ts` | File watcher triggers messages | `sendMessage` |
